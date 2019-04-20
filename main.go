@@ -1,13 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
+	"os"
 
 	"github.com/gorilla/mux"
+	_ "github.com/lib/pq"
+	"github.com/subosito/gotenv"
 )
 
 //Book Model
@@ -18,10 +21,14 @@ type Book struct {
 	Year   uint   `json:"year,omitempty"`
 }
 
-var books = []Book{
-	{ID: 1, Title: "Start python", Author: "Idir", Year: 2016},
-	{ID: 2, Title: "Golang From Scratch", Author: "Idir", Year: 2017},
-	{ID: 3, Title: "TypeScript VS JavaScript", Author: "Idir", Year: 2017},
+var db *sql.DB
+
+func init() {
+	err := gotenv.Load()
+	if err != nil {
+		log.Fatalf("Can not get env variables: %s\n", err)
+	}
+	connectDB()
 }
 
 func main() {
@@ -35,67 +42,74 @@ func main() {
 	log.Fatal(http.ListenAndServe(":8000", router))
 }
 func getBooks(w http.ResponseWriter, r *http.Request) {
+	var books []Book
+	query := "SELECT * FROM books"
+	rows, err := db.QueryContext(r.Context(), query)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for rows.Next() {
+		var book Book
+		err := rows.Scan(&book.ID, &book.Title, &book.Author, &book.Year)
+		if err != nil {
+			log.Fatal(err)
+		}
+		books = append(books, book)
+	}
 	json.NewEncoder(w).Encode(&books)
 }
 func getBook(w http.ResponseWriter, r *http.Request) {
 	params := mux.Vars(r)
-	bookID, err := strconv.Atoi(params["id"])
-	if err != nil {
-		log.Fatal(err)
-	}
+	bookID := params["id"]
+
+	query := fmt.Sprintf("SELECT * FROM books WHERE id=%s", bookID)
 	var book Book
-	for _, b := range books {
-		if b.ID == bookID {
-			book = b
+	err := db.QueryRowContext(r.Context(), query).Scan(
+		&book.ID, &book.Title, &book.Author, &book.Year)
+	if err != nil {
+		switch {
+		case err == sql.ErrNoRows:
+			fmt.Fprintf(w, "There is not a book with id : %s", bookID)
+			return
+		default:
+			log.Printf("There is an error with QueryRowContext : %s\n", err)
+			return
 		}
 	}
 	json.NewEncoder(w).Encode(&book)
 }
 func createBook(w http.ResponseWriter, r *http.Request) {
 	var book Book
-	defer r.Body.Close()
-	err := json.NewDecoder(r.Body).Decode(&book)
-	if err != nil {
-		fmt.Fprint(w, "Could not create the book")
+	if err := json.NewDecoder(r.Body).Decode(&book); err != nil {
+		fmt.Fprintf(w, "Can not create the book : %s", err)
 		return
 	}
-	books = append(books, book)
+	lastID := 0
+	err := db.QueryRowContext(r.Context(),
+		"INSERT INTO books (title, author, year) VALUES($1, $2, $3) RETURNING id",
+		&book.Title, &book.Author, &book.Year).Scan(&lastID)
+	if err != nil {
+		log.Fatalf("error with ExecContext : %s", err)
+		return
+	}
+	book.ID = int(lastID)
 	json.NewEncoder(w).Encode(&book)
 }
 func updateBook(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	defer r.Body.Close()
-	bookID, err := strconv.Atoi(params["id"])
-	if err != nil {
-		fmt.Fprint(w, "book id must be an integer")
-		return
-	}
-	var book Book
-	errD := json.NewDecoder(r.Body).Decode(&book)
-	book.ID = bookID
-	if errD != nil {
-		fmt.Fprint(w, "Could not update the book")
-		return
-	}
-	for i, item := range books {
-		if item.ID == bookID {
-			books[i] = book
-		}
-	}
-	json.NewEncoder(w).Encode(&book)
+
 }
 func deleteBook(w http.ResponseWriter, r *http.Request) {
-	params := mux.Vars(r)
-	defer r.Body.Close()
-	bookID, err := strconv.Atoi(params["id"])
+
+}
+
+func connectDB() {
+	password := os.Getenv("PASSWORD")
+	// password := "password"
+	connStr := fmt.Sprintf("user=postgres password=%s dbname=library sslmode=disable", password)
+
+	database, err := sql.Open("postgres", connStr)
 	if err != nil {
-		fmt.Fprint(w, "book id must be an integer")
-		return
+		log.Fatalf("Could not connect to database: %s\n", err)
 	}
-	for i, item := range books {
-		if item.ID == bookID {
-			books = append(books[0:i], books[i+1:]...)
-		}
-	}
-	json.NewEncoder(w).Encode(&books)
+	db = database
 }
