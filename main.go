@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 
 	"github.com/gorilla/mux"
 	_ "github.com/lib/pq"
@@ -84,27 +85,87 @@ func createBook(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Can not create the book : %s", err)
 		return
 	}
+	defer r.Body.Close()
 	lastID := 0
 	err := db.QueryRowContext(r.Context(),
 		"INSERT INTO books (title, author, year) VALUES($1, $2, $3) RETURNING id",
 		&book.Title, &book.Author, &book.Year).Scan(&lastID)
 	if err != nil {
-		log.Fatalf("error with ExecContext : %s", err)
+		log.Fatalf("error with QueryRowContext : %s", err)
 		return
 	}
 	book.ID = int(lastID)
 	json.NewEncoder(w).Encode(&book)
 }
 func updateBook(w http.ResponseWriter, r *http.Request) {
-
+	params := mux.Vars(r)
+	bookID, errID := strconv.Atoi(params["id"])
+	if errID != nil {
+		fmt.Fprintf(w, "the id must be an integer")
+		return
+	}
+	var book Book
+	if err := json.NewDecoder(r.Body).Decode(&book); err != nil {
+		fmt.Fprintf(w, "Can not Update the book : %s", err)
+		return
+	}
+	defer r.Body.Close()
+	//Check if book exist
+	var bookExist bool
+	row := db.QueryRowContext(r.Context(),
+		"SELECT EXISTS (SELECT * FROM books WHERE id=$1)", bookID)
+	if errE := row.Scan(&bookExist); errE != nil || bookExist == false {
+		switch {
+		case errE == sql.ErrNoRows || !bookExist:
+			fmt.Fprintf(w, "Book Does not Existe")
+			return
+		default:
+			log.Fatalf("error with QueryRowContext : %s", errE)
+			return
+		}
+	}
+	fmt.Println(bookExist)
+	_, err := db.ExecContext(r.Context(),
+		"UPDATE books SET title=$1, author=$2, year=$3",
+		&book.Title, &book.Author, &book.Year)
+	if err != nil {
+		log.Fatalf("error with ExecContext : %s", err)
+		return
+	}
+	json.NewEncoder(w).Encode(&book)
 }
 func deleteBook(w http.ResponseWriter, r *http.Request) {
-
+	params := mux.Vars(r)
+	bookID, errID := strconv.Atoi(params["id"])
+	if errID != nil {
+		fmt.Fprintf(w, "the id must be an integer")
+		return
+	}
+	//check if book exist
+	var bookExist bool
+	row := db.QueryRowContext(r.Context(),
+		"SELECT EXISTS (SELECT * FROM books WHERE id=$1)", bookID)
+	if errE := row.Scan(&bookExist); errE != nil || bookExist == false {
+		switch {
+		case errE == sql.ErrNoRows || !bookExist:
+			fmt.Fprintf(w, "Book Does not Existe")
+			return
+		default:
+			log.Fatalf("error with QueryRowContext Check if book exist : %s", errE)
+			return
+		}
+	}
+	//Delete book
+	_, err := db.ExecContext(r.Context(), "DELETE FROM books WHERE id=$1", bookID)
+	if err != nil {
+		log.Fatalf("error with ExecContext delete book : %s", err)
+		return
+	}
+	fmt.Fprintf(w, "Book deleted")
 }
 
 func connectDB() {
 	password := os.Getenv("PASSWORD")
-	// password := "password"
 	connStr := fmt.Sprintf("user=postgres password=%s dbname=library sslmode=disable", password)
 
 	database, err := sql.Open("postgres", connStr)
